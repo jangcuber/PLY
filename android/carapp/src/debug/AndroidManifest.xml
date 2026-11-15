@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 디버그 빌드에서만 충전 게임 화면을 adb로 바로 열 수 있게 한다(에뮬레이터 시험용). 정식 빌드는 내보내지 않는다. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
+    <application>
+        <activity android:name="ai.zride.demo.car.ChargeGameActivity" android:exported="true" tools:replace="android:exported" />
+    </application>
+</manifest>

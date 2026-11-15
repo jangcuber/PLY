@@ -1,0 +1,50 @@
+[
+  {
+    "id": "power-castle",
+    "title": "Power Castle",
+    "scene": "CHARGING",
+    "players": "2–4명",
+    "summary": "내 성에 전기를 모으고 남의 성 전기를 끌어와요",
+    "url": "http://10.0.2.2:8240/"
+  },
+  {
+    "id": "charge-relay",
+    "title": "충전 릴레이",
+    "scene": "CHARGING",
+    "players": "2–4명",
+    "summary": "그림과 답을 돌려 가며 전달해요",
+    "url": "http://10.0.2.2:8200/"
+  },
+  {
+    "id": "power-tug",
+    "title": "Power Tug",
+    "scene": "CHARGING",
+    "players": "2–4명",
+    "summary": "폰을 연타해 전기를 우리 팀 배터리로 끌어와요",
+    "url": "http://10.0.2.2:8220/"
+  },
+  {
+    "id": "volt-rush",
+    "title": "Volt Rush",
+    "scene": "CHARGING",
+    "players": "2–4명",
+    "summary": "선을 깔며 가운데 충전기에 먼저 닿아요",
+    "url": "http://10.0.2.2:8230/"
+  },
+  {
+    "id": "parking-escape",
+    "title": "주차장 좀비 탈출",
+    "scene": "PARKED",
+    "players": "준비 중",
+    "summary": "준비 중",
+    "url": null
+  },
+  {
+    "id": "on-the-road",
+    "title": "이동 중 게임",
+    "scene": "DRIVING",
+    "players": "준비 중",
+    "summary": "준비 중",
+    "url": null
+  }
+]

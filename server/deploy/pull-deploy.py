@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""Root-installed deploy poller: only successful same-repository main pushes.
+
+Runs as zride-runner. It never executes downloaded checkout code or reads a GitHub
+credential. The only privileged action is the existing fixed sudo deploy command.
+"""
+from pathlib import Path, PurePosixPath
+import gzip
+import hashlib
+import io
+import json
+import os
+import re
+import subprocess
+import tarfile
+import urllib.request
+
+REPOSITORY = 'HeIIowrld/z-ride'
+ROOT = Path('/srv/zride')
+MAX_DOWNLOAD = 16 * 1024 * 1024
+# The public source includes the place catalog, even though the runtime omits it.
+MAX_EXPANDED_SOURCE = 64 * 1024 * 1024
+REQUIRED = {
+    'package.json', 'package-lock.json', 'server.mjs', 'world.mjs',
+    'state-store.mjs', 'effects.mjs', 'game-state.mjs', 'cabin.mjs', 'places.mjs', 'party-api.mjs', 'auth-providers.mjs', 'request-policy.mjs', 'event-ledger.mjs', 'accounts.mjs', 'account-api.mjs', 'observer.mjs', 'observer/index.html',
+    'observer/app.js', 'observer/style.css', 'phone-client.mjs',
+    'phone-client/demo.html', 'phone-client/demo.js', 'phone-client/vehicle.html', 'phone-client/vehicle.js', 'phone-client/index.html', 'phone-client/app.js', 'phone-client/account.js', 'phone-client/style.css',
+}
+
+
+CHARGE_GAMES = {'power-castle', 'volt-rush', 'power-tug', 'charge-relay'}
+
+
+def charge_asset(parts):
+    """games/ 아래에서 충전 게임 실행에 필요한 파일만 고른다."""
+    parts = tuple(parts)
+    return (
+        parts in {('cloudflare', 'adapters.mjs'), ('sdk', 'zride-car.js'), ('charge-relay', 'words.mjs')}
+        or (len(parts) == 2 and parts[0] in CHARGE_GAMES and parts[1] == 'game.mjs')
+        or (len(parts) == 3 and parts[0] in CHARGE_GAMES and parts[1] == 'public'
+            and re.fullmatch(r'[a-z0-9-]{1,40}\.(html|js|css)', parts[2]) is not None)
+    )
+
+
+def fetch(url):
+    request = urllib.request.Request(url, headers={
+        'User-Agent': 'zride-trusted-main-puller',
+        'Accept': 'application/vnd.github+json' if 'api.github.com/' in url else 'application/gzip',
+        'X-GitHub-Api-Version': '2026-03-10',
+    })
+    with urllib.request.urlopen(request, timeout=30) as response:
+        payload = response.read(MAX_DOWNLOAD + 1)
+    if len(payload) > MAX_DOWNLOAD:
+        raise ValueError('Download exceeds limit')
+    return payload
+
+
+def tested_revision(document):
+    """Never accept PR runs, forks, unsuccessful runs or an unbounded SHA."""
+    for run in document.get('workflow_runs', []):
+        if (run.get('event') == 'push' and run.get('head_branch') == 'main'
+                and run.get('status') == 'completed' and run.get('conclusion') == 'success'
+                and run.get('head_repository', {}).get('full_name') == REPOSITORY
+                and run.get('path') == '.github/workflows/server-ci.yml'
+                and re.fullmatch('[0-9a-f]{40}', run.get('head_sha', ''))):
+            return run['head_sha']
+    raise ValueError('No trusted successful main CI revision found')
+
+
+def runtime_bundle(payload):
+    """Repackage an immutable public source archive without copying data/tools."""
+    files = {}
+    expanded = 0
+    prefix = None
+    with tarfile.open(fileobj=io.BytesIO(payload), mode='r:gz') as source:
+        for index, member in enumerate(source):
+            if index >= 5000:
+                raise ValueError('Source archive has too many entries')
+            path = PurePosixPath(member.name)
+            if path.is_absolute() or '..' in path.parts or not path.parts:
+                raise ValueError('Unsafe source path')
+            if prefix is None:
+                prefix = path.parts[0]
+            if path.parts[0] != prefix or not (member.isdir() or member.isfile()):
+                raise ValueError('Unexpected source entry')
+            expanded += member.size
+            if expanded > MAX_EXPANDED_SOURCE:
+                raise ValueError('Expanded source exceeds limit')
+            if len(path.parts) < 3 or not member.isfile():
+                continue
+            relative = PurePosixPath(*path.parts[2:])
+            name = relative.as_posix()
+            if path.parts[1] == 'minigames':
+                allowed = (
+                    name in {'style.css', 'bag.html', 'shared/ply.css'}
+                    or (len(relative.parts) == 3 and relative.parts[0] == 'games'
+                        and relative.parts[1] in {'license-quiz', 'pole-jump', 'raindrop'}
+                        and relative.suffix in {'.html', '.css', '.js', '.json'})
+                    or (relative.parts[:3] == ('games', 'license-quiz', 'signs')
+                        and len(relative.parts) == 4 and re.fullmatch(r'kr_[0-9]+\.svg', relative.name))
+                    or (len(relative.parts) == 2 and relative.parts[0] == 'shared' and relative.suffix == '.js')
+                    or (len(relative.parts) == 2 and relative.parts[0] == 'data'
+                        and relative.name in {'items.json', 'loot_tables.json', 'points.json'})
+                )
+                if allowed:
+                    key = 'drive-assets/' + name
+                    if key in files:
+                        raise ValueError('Duplicate runtime file')
+                    files[key] = source.extractfile(member).read()
+                continue
+            if path.parts[1] == 'games':
+                # 충전 게임 4종: 서버가 /charge/<게임>/으로 직접 띄운다(server/charge-games.mjs)
+                if charge_asset(relative.parts):
+                    key = 'charge-assets/' + name
+                    if key in files:
+                        raise ValueError('Duplicate runtime file')
+                    files[key] = source.extractfile(member).read()
+                continue
+            if path.parts[1] != 'server':
+                continue
+            allowed = (
+                len(relative.parts) == 1 and
+                (name in {'package.json', 'package-lock.json'} or name.endswith('.mjs'))
+            ) or (
+                relative.parts[0] in {'observer', 'phone-client'} and
+                (relative.suffix in {'.html', '.css', '.js', '.json', '.svg'}
+                 or name in {'phone-client/thief.webp', 'phone-client/relay.webp', 'phone-client/deadzone.webp',
+                             'phone-client/ply-lockup.jpg', 'phone-client/ply-symbol.jpg', 'phone-client/ply-road-portrait.jpg'})
+            )
+            allowed = allowed or (
+                relative.parts[:2] == ('phone-client', 'route-sign')
+                and len(relative.parts) == 3
+                and re.fullmatch(r'[A-Za-z0-9._-]{1,80}', relative.name)
+                and relative.suffix.lower() in {'.png', '.webp', '.jpg', '.jpeg', '.gif'}
+            )
+            if not allowed:
+                continue
+            if name in files:
+                raise ValueError('Duplicate runtime file')
+            files[name] = source.extractfile(member).read()
+    if not REQUIRED.issubset(files):
+        raise ValueError('Source revision lacks the required runtime files')
+    output = io.BytesIO()
+    with gzip.GzipFile(filename='', mode='wb', fileobj=output, mtime=0) as compressed:
+        with tarfile.open(fileobj=compressed, mode='w', format=tarfile.USTAR_FORMAT) as archive:
+            for name, data in sorted(files.items()):
+                member = tarfile.TarInfo(name)
+                member.mode, member.size = 0o644, len(data)
+                archive.addfile(member, io.BytesIO(data))
+    return output.getvalue()
+
+
+def main():
+    runs = json.loads(fetch(
+        f'https://api.github.com/repos/{REPOSITORY}/actions/workflows/server-ci.yml/runs'
+        '?branch=main&event=push&status=success&per_page=5'
+    ))
+    revision = tested_revision(runs)
+    if (ROOT / 'current').resolve().name == revision:
+        print(f'Already running tested main {revision}')
+        return
+    bundle = runtime_bundle(fetch(f'https://codeload.github.com/{REPOSITORY}/tar.gz/{revision}'))
+    digest = hashlib.sha256(bundle).hexdigest()
+    archive = ROOT / 'incoming' / f'zride-server-{revision}.tar.gz'
+    temporary = archive.with_suffix('.pending')
+    # Refuse a pre-existing symlink even though the incoming directory belongs
+    # to this unprivileged user. The root entrypoint validates again.
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, 'wb') as target:
+            target.write(bundle)
+            target.flush()
+            os.fsync(target.fileno())
+        os.replace(temporary, archive)
+        subprocess.run(['sudo', '-n', '/usr/local/sbin/zride-deploy', revision, digest],
+                       check=True, timeout=180)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+if __name__ == '__main__':
+    main()

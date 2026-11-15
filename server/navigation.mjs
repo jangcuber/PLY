@@ -1,0 +1,40 @@
+const fail=(message)=>Object.assign(new Error(message),{code:'INVALID_NAVIGATION_REPORT',status:400});
+const MAX_WAYPOINTS = 16;
+
+function validWaypoint(point) {
+  return Number.isFinite(point?.latitude) && Math.abs(point.latitude) <= 90
+    && Number.isFinite(point?.longitude) && Math.abs(point.longitude) <= 180
+    && (point.latitude !== 0 || point.longitude !== 0);
+}
+export function navigationReport(value,now=Date.now()){
+  if(!value||typeof value!=='object'||Array.isArray(value)||value.source!=='PLEOS_NAVI_HELPER'||typeof value.sdkConnected!=='boolean'||typeof value.owned!=='boolean'||!Number.isSafeInteger(value.routeRevision)||value.routeRevision<0)throw fail('Typed SDK navigation report required');
+  const text=(key,max=96)=>value[key]==null?null:typeof value[key]==='string'&&value[key].length<=max?value[key]:(()=>{throw fail('Invalid '+key);})();
+  const number=key=>value[key]==null?null:Number.isFinite(value[key])&&value[key]>=0&&value[key]<=1e8?value[key]:(()=>{throw fail('Invalid '+key);})();
+  const result={source:'PLEOS_NAVI_HELPER',sdkConnected:value.sdkConnected,owned:value.owned,nativeRouteRevision:value.routeRevision,event:text('event'),status:text('status')??'UNKNOWN',error:text('error'),destination:text('destination',128),remainingDistanceM:number('remainingDistanceM'),remainingTimeSec:number('remainingTimeSec'),geometryAvailable:false,geometryBasis:'UNAVAILABLE_NO_ROAD_POLYLINE',receivedAt:now};
+  if (Number.isInteger(value.speedLimitKmh) && value.speedLimitKmh > 0 && value.speedLimitKmh <= 160)
+    result.speedLimitKmh = value.speedLimitKmh;
+  if (result.status === 'ROUTE_DRIVE' && ['left', 'right'].includes(value.nextTurn)
+      && Number.isFinite(value.nextTurnDistanceM) && value.nextTurnDistanceM >= 0 && value.nextTurnDistanceM <= 1e6) {
+    result.nextTurn = value.nextTurn;
+    result.nextTurnDistanceM = value.nextTurnDistanceM;
+  }
+  if(value.latitude!=null||value.longitude!=null){if(!Number.isFinite(value.latitude)||Math.abs(value.latitude)>90||!Number.isFinite(value.longitude)||Math.abs(value.longitude)>180)throw fail('Invalid SDK coordinate');if(Number.isFinite(value.locationAgeMs)&&value.locationAgeMs>=0&&value.locationAgeMs<=10000){result.position={latitude:value.latitude,longitude:value.longitude};result.locationAgeMs=value.locationAgeMs;result.positionSource=['ANDROID_GNSS','SIMULATED'].includes(value.positionSource)?value.positionSource:'PLEOS_NAVI_HELPER';if(Number.isFinite(value.heading)&&value.heading>=0&&value.heading<=360)result.heading=value.heading;}}
+  // 목적지 좌표: 외부 길찾기로 경로선을 만들 때 사용. (0,0)은 SDK의 '목적지 없음'으로 본다.
+  if(Number.isFinite(value.destinationLatitude)&&Number.isFinite(value.destinationLongitude)&&Math.abs(value.destinationLatitude)<=90&&Math.abs(value.destinationLongitude)<=180&&(value.destinationLatitude!==0||value.destinationLongitude!==0))result.destinationPosition={latitude:value.destinationLatitude,longitude:value.destinationLongitude};
+  if (value.waypoints !== undefined) {
+    if (!Array.isArray(value.waypoints) || value.waypoints.length > MAX_WAYPOINTS || !value.waypoints.every(validWaypoint))
+      throw fail('Invalid ordered waypoints');
+    result.waypoints = value.waypoints.map(({ latitude, longitude }) => ({ latitude, longitude }));
+  }
+  if (Number.isInteger(value.missingWaypointCount) && value.missingWaypointCount > 0
+      && value.missingWaypointCount <= MAX_WAYPOINTS) {
+    result.missingWaypointCount = value.missingWaypointCount;
+  }
+  return result;
+}
+export function navigationSnapshot(room,now=Date.now()){
+  const state=room.navigation;
+  if(!state||!room.vehicle.hostConnected||now-state.receivedAt>10000)return {source:'PLEOS_NAVI_HELPER',available:false,status:state?'STALE':'NOT_CONNECTED',geometryAvailable:false};
+  if(!state.sdkConnected)return {source:'PLEOS_NAVI_HELPER',available:false,status:'SDK_NOT_CONNECTED',error:state.error,geometryAvailable:false};
+  const {receivedAt,...data}=state;if(data.position){data.locationAgeMs+=now-receivedAt;if(data.locationAgeMs>10000){delete data.position;delete data.locationAgeMs;}}return {...data,available:true,reportAgeMs:now-receivedAt,hardwareAttested:false};
+}

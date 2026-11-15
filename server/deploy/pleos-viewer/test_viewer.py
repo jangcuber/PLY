@@ -1,0 +1,95 @@
+from pathlib import Path
+import sys
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+import importlib.util,json,time,unittest,urllib.request,urllib.error,threading
+from unittest.mock import patch
+spec=importlib.util.spec_from_file_location('pleos_viewer',Path(__file__).with_name('viewer.py'))
+viewer=importlib.util.module_from_spec(spec);spec.loader.exec_module(viewer)
+
+class ViewerTests(unittest.TestCase):
+    def setUp(self):viewer.cache.update(at=0,value=None)
+    def test_active_android_user_and_fresh_snapshot_are_filtered_before_publication(self):
+        seen=[]
+        def command(args,timeout=2):
+            seen.append(args)
+            if args[0]=='systemctl':return 'active' if '@1.'in args[-1] else ''
+            if args[-1]=='sys.boot_completed':return '1'
+            if args[-1]=='get-current-user':return '10'
+            if 'cat'in args:return json.dumps({'roomId':'12345678-1234-1234-1234-123456789012','state':'READY','members':[{}],'joinCode':'MUST_NOT_PUBLISH','token':'MUST_NOT_PUBLISH','vehicle':{'gear':'P','ux':'ALLOWED','rawGps':'MUST_NOT_PUBLISH'}})
+            return str(int(time.time()))
+        with patch.object(viewer,'command',side_effect=command):value=viewer.catalog()
+        self.assertTrue(value['vehicles'][0]['roomConnected'])
+        self.assertEqual(value['vehicles'][1]['state'],'STOPPED')
+        self.assertNotIn('MUST_NOT_PUBLISH',json.dumps(value))
+        self.assertTrue(any('--user'in args and '10'in args for args in seen))
+    def test_stale_snapshot_never_claims_live_party_connection(self):
+        def command(args,timeout=2):
+            if args[0]=='systemctl':return 'active'
+            if args[-1]=='sys.boot_completed':return '1'
+            if args[-1]=='get-current-user':return '10'
+            if 'cat'in args:return json.dumps({'roomId':'12345678-1234-1234-1234-123456789012'})
+            return str(int(time.time())-60)
+        with patch.object(viewer,'command',side_effect=command):self.assertFalse(viewer.catalog()['vehicles'][0]['roomConnected'])
+    def test_stopped_phone_is_reported_before_attempting_adb(self):
+        with patch.object(viewer, 'command', return_value='inactive') as command:
+            self.assertEqual(viewer.phone_state(), 'STOPPED')
+            command.assert_called_once_with(['systemctl', 'is-active', 'ply-phone.service'])
+
+    def test_native_navigation_does_not_accept_stale_sdk_status(self):
+        sdk = viewer.native_navigation
+        with patch.object(sdk.simulator, 'fresh_snapshot', side_effect=ValueError('STALE_VEHICLE_SNAPSHOT')):
+            self.assertFalse(sdk.status(1)['sdkConnected'])
+            with self.assertRaisesRegex(ValueError, 'NAVIGATION_SDK_NOT_CONNECTED'):
+                sdk.execute(1, {'action': 'destinationA'})
+
+    def test_public_http_exposes_no_control_or_arbitrary_file_endpoint(self):
+        server=viewer.ThreadingHTTPServer(('127.0.0.1',0),viewer.Handler);thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start();base='http://127.0.0.1:'+str(server.server_port)
+        try:
+            for path in ['/','/1','/2','/3','/viewer.js','/phone','/phone.js','/scenarios.json']:
+                with urllib.request.urlopen(base+path) as r:self.assertEqual(r.status,200)
+            for path in ['/4','/novnc/../../etc/passwd','/novnc/%2Fetc/passwd','/control','/viewer.py']:
+                with self.assertRaises(urllib.error.HTTPError) as error:urllib.request.urlopen(base+path)
+                self.assertEqual(error.exception.code,404)
+            with self.assertRaises(urllib.error.HTTPError) as error:urllib.request.urlopen(urllib.request.Request(base+'/control',data=b'{}'))
+            self.assertEqual(error.exception.code,404)
+        finally:server.shutdown();server.server_close();thread.join()
+
+    def test_single_vehicle_redirect_and_disabled_vehicle_routes(self):
+        server=viewer.ThreadingHTTPServer(('127.0.0.1',0),viewer.Handler)
+        thread=threading.Thread(target=server.serve_forever,daemon=True)
+        thread.start()
+        try:
+            from http.client import HTTPConnection
+            connection=HTTPConnection('127.0.0.1',server.server_port,timeout=5)
+            with patch.object(viewer,'VEHICLES',(1,)), patch.object(viewer,'command',return_value=''):
+                for method,path,code in [('GET','/',302),('GET','/1',200),('GET','/2',404),
+                                         ('GET','/navigation/3',404),('GET','/simulation/2',404),
+                                         ('POST','/simulation/2',404),('GET','/phone',200),('GET','/status.json',200)]:
+                    connection.request(method,path)
+                    response=connection.getresponse()
+                    body=response.read()
+                    self.assertEqual(response.status,code)
+                    if path=='/':self.assertEqual(response.getheader('Location'),'/vehicles/1')
+                    if path=='/status.json':
+                        self.assertEqual([vehicle['id'] for vehicle in json.loads(body)['vehicles']],['1'])
+        finally:server.shutdown();server.server_close();thread.join()
+
+    def test_android_only_opens_an_exact_ply_invite(self):
+        invite='https://hyundai.hjpark.net/play#invite='+'a'*32
+        with patch.object(viewer,'command',return_value='Starting: Intent') as command:
+            self.assertEqual(viewer.open_phone_invite({'invite':invite}),{'opened':True})
+            self.assertEqual(command.call_args.args[0][-3:],[invite,'-p','com.android.chrome'])
+            for bad in [invite+';id',invite.replace('/play','/vehicles/1'),invite.replace('hyundai','example')]:
+                with self.assertRaisesRegex(ValueError,'INVALID_COMMAND'):
+                    viewer.open_phone_invite({'invite':bad})
+            self.assertEqual(command.call_count,1)
+
+    def test_android_can_read_visible_vehicle_invite_without_returning_it(self):
+        invite='https://hyundai.hjpark.net/play#invite='+'b'*32
+        with patch.object(viewer,'visible_invite',return_value=invite) as scan, patch.object(viewer,'command',return_value='Starting: Intent'):
+            self.assertEqual(viewer.open_phone_invite({'vehicle':1}),{'opened':True})
+            scan.assert_called_once_with(1)
+            with self.assertRaisesRegex(ValueError,'INVALID_COMMAND'):
+                viewer.open_phone_invite({'vehicle':4})
+
+if __name__=='__main__':unittest.main()

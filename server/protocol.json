@@ -1,0 +1,1224 @@
+{
+  "protocol": "zride-demo-v1",
+  "status": "implemented single-instance SQLite-capable prototype with read-only observer; not full production API",
+  "httpBase": "http://10.0.2.2:8000 for Android Emulator; http://127.0.0.1:8000 on PC",
+  "webSocketPath": "/ws",
+  "http": [
+    {
+      "method": "POST",
+      "path": "/api/game-items",
+      "auth": "Linked DEADZONE or Volt Rush game-server bearer credential bound to room code",
+      "body": "game, code and action loadout/use/refund; use and refund carry itemId and a stable useId",
+      "response": "loadout and item counts, remaining after one use, or refund receipt"
+    },
+    {
+      "method": "POST",
+      "path": "/api/rooms/{roomId}/drive-game",
+      "auth": "CAR_HOST with fresh parked foreground telemetry",
+      "body": {"game": "license-quiz, pole-jump or raindrop"},
+      "response": {"game": "Selected game"},
+      "availability": "snapshot.room.driveGamesAvailable is true when the runtime ships the game assets. snapshot.room.driveGame is visible to approved members. Approved passenger phones open games manually in D with fresh vehicle speed and a seat not reported empty."
+    },
+    {
+      "method": "POST",
+      "path": "/api/rooms/{roomId}/venue-game",
+      "auth": "Approved member; host controls opening, start, progression and party supplies",
+      "body": {"action": "status/open/start/next/item/ready/play/vote/submit", "kind": "thief or relay for open"},
+      "response": {"stop": "approved charging venue with placeId, name and play-zone coordinates, or null", "game": "public host or private passenger view", "supplies": "party count"}
+    },
+    {
+      "method": "POST",
+      "path": "/api/world/route-supply",
+      "auth": "Approved passenger in Drive near an unclaimed spot, with fresh location and Pleos guidance or an explicit route",
+      "availability": "snapshot.room.routeSupplyAvailable and routeSupplySpot (placeId, name, category, entrance latitude and longitude) are scoped to the approved passenger",
+      "history": "snapshot.room.collection.routeSupplyHistory contains up to 20 recent successful crew pickups, each awarding one common supply",
+      "body": {"passengerConfirmed": true, "challengeId": "optional", "sequence": "required to complete"},
+      "response": {"challenge": "challengeId, sequence, placeName", "completion": "supplies"}
+    },
+    {
+      "method": "POST",
+      "path": "/api/rooms/{roomId}/charge-game",
+      "auth": "CAR_HOST, parked at an approved charging stop or a configured simulation stop while following DEMO_ROUTE (charging or waiting)",
+      "availability": "snapshot.room.chargeGamesAvailable lists the configured games for the vehicle host.",
+      "body": {"action": "open, item or close", "game": "game id for open and item"},
+      "response": {"open": "hostUrl with #host ticket, crew, supplies", "item": "supplies after spending one", "close": "closed"},
+      "crew": "snapshot.room.chargeGame.joinUrl is a personal #join ticket for each approved passenger who was seated when the game opened. In Volt Rush, the driver can join the same room via the QR code shown on the car screen.",
+      "hosting": "games default to this server at /charge/{game}/ (car), /charge/{game}/p (phone) and /charge/{game}/ws; then hostUrl and joinUrl are server-relative unless publicOrigin is set, so clients resolve them against the server they are connected to"
+    },
+    {
+      "method": "POST",
+      "path": "/api/world/route-sign",
+      "auth": "Approved passenger (not CAR_HOST), seat not EMPTY",
+      "availability": "snapshot.room.journeyRoute: status PENDING/READY, key, source (registered route source, EXTERNAL_ROUTING_OSRM or STRAIGHT_LINE_FALLBACK), lengthM, progressM, offRouteM, rerouting (new route being fetched; current one still shown), geometry (<=400 simplified points), destination, readyRadiusM, signs[] {signId, gameId (license-quiz/pole-jump/raindrop/zombie; shuffled so every game appears once before any repeats and never twice in a row), playable (false for coming-soon games such as zombie), latitude, longitude, alongM, aheadM, distanceM, state AHEAD/READY/CLAIMED/MISSED, crewClaims, reward {id, name, description} for playable signs}",
+      "history": "snapshot.room.routeSignHistory contains up to 20 recent rewards {signId, gameId, itemId, itemName, nickname, at}",
+      "body": {
+        "start": {
+          "signId": "s1",
+          "routeKey": "current journeyRoute.key",
+          "gameId": "optional; must match the sign's gameId if supplied"
+        },
+        "complete": {
+          "challengeId": "from start",
+          "result": {
+            "score": "positive finite number reported by the game client"
+          }
+        }
+      },
+      "response": {
+        "start": "challengeId, signId, gameId, expiresAt (5 min), minPlayMs",
+        "completion": "signId, gameId, items (specialized reward and crew crate item), supplies, inventory; replayed=true for a repeated completion before expiry"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/rooms/{roomId}/deadzone",
+      "auth": "CAR_HOST with fresh parked foreground vehicle",
+      "availability": "snapshot.room.deadzoneAvailable is exposed to the vehicle host. Show DEADZONE entry only when true.",
+      "body": {
+        "create": "optional boolean",
+        "enableAmbient": "optional boolean, local user opt-in",
+        "repair": "optional boolean, spends one party supply between waves"
+      },
+      "response": {
+        "match": "null or state/wave/cleared/score/players leaderboard"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/healthz",
+      "auth": false,
+      "response": {
+        "ok": "boolean",
+        "protocol": "zride-demo-v1",
+        "contractRevision": 10
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/session",
+      "auth": "body.accessKey required only when testAccessKey / ZRIDE_TEST_ACCESS_KEY is configured; no Bearer token for enrollment",
+      "body": {
+        "role": "CAR_HOST or PHONE",
+        "nickname": "1..24 chars",
+        "accessKey": "Shared private team test key, conditionally required; never returned or stored in durable state"
+      },
+      "response": {
+        "sessionId": "uuid",
+        "token": "opaque",
+        "expiresAt": "unix-ms",
+        "role": "CAR_HOST or PHONE"
+      },
+      "errors": [
+        "401 TEST_ACCESS_REQUIRED when configured key is absent, invalid or wrong"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/rooms",
+      "auth": "Bearer token; CAR_HOST",
+      "body": {},
+      "response": {
+        "roomId": "uuid",
+        "joinCode": "single-use 10-char code, 120s TTL",
+        "room": "snapshot"
+      },
+      "note": "Optional bounded JSON object body is consumed; empty body means {}. Fields are unused. Malformed/non-object JSON returns 400; >16 KiB returns 413."
+    },
+    {
+      "method": "POST",
+      "path": "/api/join",
+      "auth": "Bearer token; PHONE",
+      "body": {
+        "joinCode": "from vehicle",
+        "seat": "FRONT_PASSENGER or REAR_LEFT or REAR_RIGHT"
+      },
+      "response": {
+        "roomId": "uuid",
+        "memberId": "uuid",
+        "pending": true,
+        "room": "snapshot"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/rooms/{roomId}/approve",
+      "auth": "Bearer token; room CAR_HOST",
+      "body": {
+        "memberId": "pending member uuid",
+        "seat": "optional override",
+        "allowManualUnknown": "optional boolean; explicit manual fallback acknowledgment only when current occupancy UNKNOWN"
+      },
+      "response": {
+        "room": "snapshot"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/rooms/{roomId}",
+      "auth": "Bearer token; member",
+      "response": {
+        "room": "snapshot"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/world/nearby",
+      "auth": "Bearer approved PHONE",
+      "body": {
+        "latitude": 37.5665,
+        "longitude": 126.978,
+        "radiusM": 500
+      },
+      "note": "map browsing centre only, not location proof"
+    },
+    {
+      "method": "POST",
+      "path": "/api/world/location",
+      "auth": "Bearer approved PHONE",
+      "body": {
+        "passengerConfirmed": true,
+        "location": "fresh phone fix shape"
+      },
+      "note": "optional quality metadata receipt, not required before claim"
+    },
+    {
+      "method": "POST",
+      "path": "/api/world/claim",
+      "auth": "Bearer approved PHONE",
+      "body": {
+        "commandId": "unique-id",
+        "spawnId": "SEOUL_CITYHALL_TEST_A",
+        "scheduleId": "2026-11-01",
+        "version": "seoul-demo-v2-party-loot",
+        "passengerConfirmed": true,
+        "location": {
+          "latitude": 37.5665,
+          "longitude": 126.978,
+          "accuracyM": 5,
+          "measuredAgeMs": 500,
+          "source": "EMULATOR_GPS",
+          "isMock": false
+        }
+      },
+      "note": "limited reported-location checks; hardwareAttested false"
+    },
+    {
+      "method": "GET",
+      "path": "/api/observer/rooms",
+      "auth": "Separate configured operator Bearer key; not a game session token",
+      "response": {
+        "protocol": "zride-observer-v1",
+        "readOnly": true,
+        "serverTime": "Unix milliseconds",
+        "rooms": "allow-listed summaries without session IDs/join codes/phone positions/individual claims"
+      },
+      "note": "Disabled if observerToken / ZRIDE_OBSERVER_TOKEN is unset"
+    },
+    {
+      "method": "GET",
+      "path": "/api/rooms/{roomId}/effects",
+      "auth": "Bearer approved room member",
+      "response": {
+        "effects": "current ephemeral 4D summary"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/rooms/{roomId}/effects/session",
+      "auth": "Bearer current room CAR_HOST; physical intent execution still belongs to native vehicle client",
+      "bodySchema": "EffectSessionRequest",
+      "response": {
+        "effects": "current ephemeral summary",
+        "data": "logical result",
+        "replayed": "optional boolean; never re-emits effects"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/rooms/{roomId}/effects/scene",
+      "auth": "Bearer current room CAR_HOST; physical intent execution still belongs to native vehicle client",
+      "bodySchema": "EffectSceneRequest",
+      "response": {
+        "effects": "current ephemeral summary",
+        "data": "logical result",
+        "replayed": "optional boolean; never re-emits effects"
+      },
+      "note": "Manual scene only for generic-coop-v1; heist-demo-v1 returns 409 GAME_SCENE_MANAGED because server game state owns scene and speed."
+    },
+    {
+      "method": "POST",
+      "path": "/api/rooms/{roomId}/effects/cue",
+      "auth": "Bearer current room CAR_HOST; physical intent execution still belongs to native vehicle client",
+      "bodySchema": "EffectCueRequest",
+      "response": {
+        "effects": "current ephemeral summary",
+        "data": "logical result",
+        "replayed": "optional boolean; never re-emits effects"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/rooms/{roomId}/effects/stop",
+      "auth": "Bearer current room CAR_HOST; physical intent execution still belongs to native vehicle client",
+      "bodySchema": "EffectStopRequest",
+      "response": {
+        "effects": "current ephemeral summary",
+        "data": "logical result",
+        "replayed": "optional boolean; never re-emits effects"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/scenarios",
+      "auth": "any game Bearer session",
+      "response": {
+        "scenarios": "server scenario definitions"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/rooms/{roomId}/state",
+      "auth": "approved room member Bearer",
+      "response": {
+        "room": "approved composite snapshot",
+        "serverTime": "Unix ms"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/rooms/{roomId}/game/configure",
+      "auth": "CAR_HOST, not PLAYING",
+      "bodySchema": "GameConfigureRequest",
+      "response": {
+        "room": "current approved snapshot",
+        "data": "logical command outcome",
+        "replayed": "boolean"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/rooms/{roomId}/game/input",
+      "auth": "current CAR_HOST driverSessionId",
+      "bodySchema": "GameInputRequest",
+      "response": {
+        "room": "current approved snapshot",
+        "data": "logical command outcome",
+        "replayed": "boolean"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/rooms/{roomId}/game/advance",
+      "auth": "CAR_HOST",
+      "bodySchema": "GameAdvanceRequest",
+      "response": {
+        "room": "current approved snapshot",
+        "data": "logical command outcome",
+        "replayed": "boolean"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/rooms/{roomId}/game/interact",
+      "auth": "approved PHONE",
+      "bodySchema": "GameInteractRequest",
+      "response": {
+        "room": "current approved snapshot",
+        "data": "logical command outcome",
+        "replayed": "boolean"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/auth/providers",
+      "auth": "public",
+      "requestSchema": null,
+      "responseSchema": "AuthProviders"
+    },
+    {
+      "method": "POST",
+      "path": "/api/invites/redeem",
+      "auth": "public",
+      "requestSchema": "InviteRedeem",
+      "responseSchema": "InviteJoined"
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/places/review",
+      "auth": "review",
+      "requestSchema": "PlaceReviewRequest",
+      "responseSchema": "PlaceReviewResult"
+    },
+    {
+      "method": "GET",
+      "path": "/api/places/catalog",
+      "auth": "member",
+      "requestSchema": null,
+      "responseSchema": "CatalogStatus"
+    },
+    {
+      "method": "POST",
+      "path": "/api/places/nearby",
+      "auth": "member",
+      "requestSchema": "PlaceQuery",
+      "responseSchema": "PlaceList"
+    },
+    {
+      "method": "GET",
+      "path": "/api/spots/{spotId}/shared",
+      "auth": "member",
+      "requestSchema": null,
+      "responseSchema": "WorldShared"
+    },
+    {
+      "method": "GET",
+      "path": "/api/rooms/{roomId}/route",
+      "auth": "member",
+      "requestSchema": null,
+      "responseSchema": "RouteState"
+    },
+    {
+      "method": "POST",
+      "path": "/api/rooms/{roomId}/route",
+      "auth": "host",
+      "requestSchema": "RouteRequest",
+      "responseSchema": "RouteState"
+    },
+    {
+      "method": "POST",
+      "path": "/api/rooms/{roomId}/route/spots",
+      "auth": "member",
+      "requestSchema": "RouteSpotQuery",
+      "responseSchema": "PlaceList"
+    },
+    {
+      "method": "POST",
+      "path": "/api/rooms/{roomId}/party",
+      "auth": "host",
+      "requestSchema": "PartySettings",
+      "responseSchema": "PartyMutation"
+    },
+    {
+      "method": "POST",
+      "path": "/api/rooms/{roomId}/party/invite",
+      "auth": "host",
+      "requestSchema": null,
+      "responseSchema": "PartyInvite"
+    },
+    {
+      "method": "POST",
+      "path": "/api/rooms/{roomId}/party/leave",
+      "auth": "memberIncludingPending",
+      "requestSchema": null,
+      "responseSchema": "PartyMutation"
+    },
+    {
+      "method": "POST",
+      "path": "/api/rooms/{roomId}/party/remove",
+      "auth": "host",
+      "requestSchema": "PartyMemberRemove",
+      "responseSchema": "PartyMutation"
+    },
+    {
+      "method": "POST",
+      "path": "/api/rooms/{roomId}/party/disband",
+      "auth": "host",
+      "requestSchema": null,
+      "responseSchema": "PartyMutation"
+    },
+    {
+      "method": "POST",
+      "path": "/api/rooms/{roomId}/party/contribute",
+      "auth": "host",
+      "requestSchema": "SpotContribution",
+      "responseSchema": "SpotContributionResult"
+    },
+    {
+      "method": "POST",
+      "path": "/api/rooms/{roomId}/party/events/join",
+      "auth": "host",
+      "requestSchema": "EventJoinRequest",
+      "responseSchema": "EventJoinResponse"
+    },
+    {
+      "method": "GET",
+      "path": "/api/rooms/{roomId}/results",
+      "auth": "approved member",
+      "requestSchema": null,
+      "responseSchema": "MissionResultPage"
+    },
+    {
+      "method": "GET",
+      "path": "/api/rooms/{roomId}/rewards",
+      "auth": "approved member",
+      "requestSchema": null,
+      "responseSchema": "RewardPage"
+    },
+    {
+      "method": "POST",
+      "path": "/api/rooms/{roomId}/rewards/claim",
+      "auth": "host",
+      "requestSchema": "RewardClaimRequest",
+      "responseSchema": "RewardClaimResponse"
+    },
+    {
+      "method": "GET",
+      "path": "/api/client-config",
+      "auth": "public",
+      "requestSchema": null,
+      "responseSchema": "GameClientConfig"
+    },
+    {
+      "method": "POST",
+      "path": "/api/accounts/guest",
+      "auth": "public",
+      "requestSchema": "GuestAccountRequest",
+      "responseSchema": "AccountSession"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/google/challenge",
+      "auth": "optional account; LINK requires account",
+      "requestSchema": "GoogleChallengeRequest",
+      "responseSchema": "GoogleChallenge"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/google/exchange",
+      "auth": "optional account; LINK requires original account",
+      "requestSchema": "GoogleExchangeRequest",
+      "responseSchema": "AccountSession"
+    },
+    {
+      "method": "POST",
+      "path": "/api/invites/preview",
+      "auth": "optional account",
+      "requestSchema": "InvitePreviewRequest",
+      "responseSchema": "InvitePreview"
+    },
+    {
+      "method": "GET",
+      "path": "/api/me",
+      "auth": "phone account",
+      "requestSchema": null,
+      "responseSchema": "AccountView"
+    },
+    {
+      "method": "POST",
+      "path": "/api/me/profile",
+      "auth": "phone account",
+      "requestSchema": "AccountProfileRequest",
+      "responseSchema": "AccountView"
+    },
+    {
+      "method": "GET",
+      "path": "/api/me/parties",
+      "auth": "phone account",
+      "requestSchema": null,
+      "responseSchema": "PhoneMemberships"
+    },
+    {
+      "method": "GET",
+      "path": "/api/me/history",
+      "auth": "phone account",
+      "requestSchema": null,
+      "responseSchema": "AccountHistory"
+    },
+    {
+      "method": "POST",
+      "path": "/api/accounts/refresh",
+      "auth": "phone account",
+      "requestSchema": null,
+      "responseSchema": "AccountSession"
+    },
+    {
+      "method": "POST",
+      "path": "/api/accounts/logout",
+      "auth": "phone account",
+      "requestSchema": null,
+      "responseSchema": "AccountLogout"
+    },
+    {
+      "method": "POST",
+      "path": "/api/me/party-ticket",
+      "auth": "phone account",
+      "requestSchema": null,
+      "responseSchema": "AccountGameTicket"
+    },
+    {
+      "method": "POST",
+      "path": "/api/me/invitations/accept",
+      "auth": "phone account",
+      "requestSchema": "AccountInviteAcceptance",
+      "responseSchema": "AccountJoinedParty"
+    },
+    {
+      "method": "POST",
+      "path": "/api/me/invitations/cancel",
+      "auth": "phone account",
+      "requestSchema": null,
+      "responseSchema": "AccountJoinCancelled"
+    },
+    {
+      "method": "POST",
+      "path": "/api/me/party/leave",
+      "auth": "phone account",
+      "requestSchema": null,
+      "responseSchema": "AccountPartyLeft"
+    }
+  ],
+  "authFirstMessage": {
+    "type": "auth",
+    "token": "HTTP session token",
+    "roomId": "uuid"
+  },
+  "vehicleReportExample": {
+    "speedMps": 0,
+    "type": "vehicle.report",
+    "commandId": "unique-string",
+    "ux": "ALLOWED",
+    "gear": "P",
+    "seats": [
+      {
+        "seat": "FRONT_PASSENGER",
+        "occupancy": "UNKNOWN"
+      }
+    ],
+    "source": "AAOS_OR_PLEOS_CALLBACK",
+    "charge": {
+      "state": "UNKNOWN",
+      "portConnection": "UNKNOWN",
+      "source": "NONE"
+    },
+    "reportSeq": 1,
+    "foreground": true
+  },
+  "commandExample": {
+    "type": "command",
+    "commandId": "unique-string",
+    "roomEpoch": 1,
+    "action": "fire",
+    "angleDeg": 60
+  },
+  "actions": {
+    "round.start": "CAR_HOST; also explicit resume",
+    "round.pause": "approved member; safe pause ignores stale epoch",
+    "support.pulse": "CAR_HOST; battle gate required; supplies >=1 required and consumed; 5 seconds damage 3; 0 => SUPPLY_REQUIRED",
+    "fire": "approved passenger; current epoch, gate and sector checked",
+    "mobile.collect": "Approved passenger + passengerConfirmed true; independent of vehicle/battle gate and roomEpoch. Fixed DEMO_PICKUP fixtures only, no GPS verification."
+  },
+  "events": [
+    "auth.ok",
+    "snapshot",
+    "result",
+    "vehicle.effect.intent",
+    "vehicle.effect.stop",
+    "world.snapshot",
+    "world.unavailable",
+    "collection.changed",
+    "mission.changed"
+  ],
+  "resultExample": {
+    "type": "result",
+    "commandId": "unique-string",
+    "ok": false,
+    "error": {
+      "code": "ANGLE_OUTSIDE_SECTOR",
+      "message": "Allowed -45..90 degrees"
+    },
+    "roomEpoch": 1
+  },
+  "memberFields": [
+    "memberId",
+    "sessionId",
+    "nickname",
+    "role",
+    "seat",
+    "approved",
+    "connected",
+    "seatEvidence",
+    "sector"
+  ],
+  "roomFields": [
+    "roomId",
+    "roomEpoch",
+    "stateVersion",
+    "state",
+    "pauseReason",
+    "joinCode",
+    "joinExpiresAt",
+    "members",
+    "vehicle",
+    "stats",
+    "sectors",
+    "trust",
+    "serverTime",
+    "zombies",
+    "collection",
+    "party",
+    "navigation"
+  ],
+  "vehicleFields": [
+    "ux",
+    "gear",
+    "seats",
+    "charge",
+    "source",
+    "reportAgeMs",
+    "playAllowed",
+    "gateReasons",
+    "foreground"
+  ],
+  "statsFields": [
+    "shots",
+    "rejectedShots",
+    "hits",
+    "zombieHp",
+    "zombieAngleDeg",
+    "supportUntil",
+    "supportCount",
+    "kills",
+    "supportActive",
+    "waveCleared",
+    "lastShot",
+    "supportDamage",
+    "supportSupplyUsed"
+  ],
+  "angles": {
+    "coordinate": "vehicle relative, -180..180 inclusive; 0 front, +90 right, -90 left, +/-180 rear",
+    "FRONT_PASSENGER": [
+      -45,
+      90
+    ],
+    "REAR_LEFT": [
+      -180,
+      -45
+    ],
+    "REAR_RIGHT": [
+      45,
+      180
+    ],
+    "overlap": "intentional; sectors are game design, not physical ballistics",
+    "rearBoundary": "Both -180 and +180 are the same rear boundary and allowed for both rear seats"
+  },
+  "seatEvidence": {
+    "SENSOR": "reported OCCUPIED; not independent identity proof",
+    "MANUAL_UNKNOWN": "manual host approved mapping; occupancy UNKNOWN or no signal",
+    "EMPTY": "Current or last EMPTY remains locked across UNKNOWN/missing; new OCCUPIED or explicit host allowManualUnknown approval while current UNKNOWN can release"
+  },
+  "gate": {
+    "requirements": [
+      "host socket connected",
+      "vehicle.report no more than 6 seconds old",
+      "ux ALLOWED",
+      "gear P",
+      "foreground true"
+    ],
+    "reportIntervalRecommendationMs": 2000,
+    "unknown": "fail closed for UX/gear; never infer charge from switch or port-open",
+    "safety": "vehicle must stop locally before waiting for server response",
+    "reportSequence": "Native client increments reportSeq per socket; server rejects non-increasing provided seq. Missing seq is legacy demo receipt-order only."
+  },
+  "limits": {
+    "jsonBytes": 16384,
+    "socketAuthTimeoutMs": 5000,
+    "wsMessagesPer10Seconds": 120,
+    "maxRoomMembers": 4,
+    "maxRetainedCommandsPerMember": 10000,
+    "sessionTtlHours": 8
+  },
+  "limitations": [
+    "single-instance SQLite checkpoint, not a replicated database or global cross-room economy",
+    "createDemoServer() without dbPath/stateStore is ephemeral; CLI defaults to SQLite and requires a durable data directory",
+    "HTTP/WS debug only on loopback by default; public HTTPS/WSS deployment is separate infrastructure work",
+    "CAR_HOST self-enrollment is a closed-demo shortcut, not production vehicle authentication",
+    "no physical GPS attestation, live charger integration, global territory, production physics/AI or logout/refresh/deletion endpoints yet",
+    "vehicle data is an untrusted client report; server authority covers game rules",
+    "DEMO_PICKUP fixtures have no coordinates; world APIs check reported location without proving physical presence",
+    "observer reconstructs server state; no Android/vehicle pixel stream, camera or microphone capture"
+  ],
+  "zombiesExample": [
+    {
+      "id": "zombie_left",
+      "angleDeg": -100,
+      "hp": 5,
+      "maxHp": 5
+    },
+    {
+      "id": "zombie_front",
+      "angleDeg": 60,
+      "hp": 5,
+      "maxHp": 5
+    },
+    {
+      "id": "zombie_rear",
+      "angleDeg": 140,
+      "hp": 5,
+      "maxHp": 5
+    }
+  ],
+  "wave": "All three targets dead => CLEARED and new epoch; explicit host round.start resets HP",
+  "pendingProjection": "Only own pending member; vehicle states redacted UNKNOWN, other members and zombies hidden, stats zero",
+  "contractRevision": 10,
+  "collectionCommandExample": {
+    "type": "command",
+    "commandId": "unique-id",
+    "roomEpoch": 0,
+    "action": "mobile.collect",
+    "pickupId": "DEMO_PICKUP_A",
+    "passengerConfirmed": true
+  },
+  "collectionSnapshot": {
+    "mode": "DEMO_PICKUP",
+    "gpsVerified": false,
+    "label": "테스트 수집 지점 · GPS 미검증",
+    "fixtures": [
+      {
+        "pickupId": "DEMO_PICKUP_A",
+        "title": "테스트 보급 상자 A",
+        "resource": "supplies",
+        "amount": 1
+      },
+      {
+        "pickupId": "DEMO_PICKUP_B",
+        "title": "테스트 보급 상자 B",
+        "resource": "supplies",
+        "amount": 1
+      },
+      {
+        "pickupId": "DEMO_PICKUP_C",
+        "title": "테스트 보급 상자 C",
+        "resource": "supplies",
+        "amount": 1
+      }
+    ],
+    "inventory": {
+      "supplies": 0
+    },
+    "collectedPickupIds": [],
+    "lastCollect": null
+  },
+  "collectionEligibility": "Host-approved passenger seat role plus phone self-declaration only; not live vehicle-seat or driver identity proof. No car VHAL/location relay for moving collection.",
+  "worldPolicy": {
+    "collectRadiusM": 80,
+    "maxAccuracyM": 50,
+    "maxMeasuredAgeMs": 10000,
+    "maxQueryRadiusM": 2000,
+    "pointKind": "TEST_GAME_POINT_NOT_CHARGER",
+    "worldVersion": "seoul-demo-v2-party-loot",
+    "schedule": "UTC day",
+    "timestamps": "Unix milliseconds",
+    "storage": "Configured SQLite checkpoint persists claims/receipts/inventory; raw phone position and temporary quality summaries are not persisted or broadcast.",
+    "claimResult": "locationValidated indicates reported input checks only; hardwareAttested false; emulator source => MOCK_DEMO"
+  },
+  "persistence": {
+    "formatVersion": 2,
+    "engine": "SQLite checkpoint; WAL + synchronous FULL",
+    "cliDefault": "data/zride.sqlite",
+    "env": "ZRIDE_DB_PATH",
+    "programmaticDefault": "memory unless dbPath/stateStore configured",
+    "persisted": [
+      "hashed session lookup and expiry",
+      "rooms/approval/seat memberships",
+      "inventory/game progress",
+      "fixture/world claim ledgers",
+      "WS/world idempotency receipts",
+      "unexpired unused join codes"
+    ],
+    "excluded": [
+      "sockets",
+      "live vehicle authorization/lease",
+      "raw phone coordinates",
+      "temporary location-quality summary",
+      "all 4D effect sessions/intents/reports/receipts"
+    ],
+    "restart": "PLAYING -> PAUSED; unsafe vehicle values reset; existing token/room reconnect, fresh report and explicit host start",
+    "saveFailure": "STORAGE_UNAVAILABLE503; health503 ok:false; no new success/broadcast; restart from committed checkpoint",
+    "singleInstanceOnly": true
+  },
+  "observer": {
+    "ui": "/observer",
+    "webSocketPath": "/observer/ws",
+    "firstMessage": {
+      "type": "observer.auth",
+      "token": "operator key or own-room host token",
+      "roomId": "UUID"
+    },
+    "auth": "operator key selects any room read-only; host session restricted to approved host membership",
+    "operatorConfig": "observerToken option / ZRIDE_OBSERVER_TOKEN env; disabled by default",
+    "events": [
+      "observer.auth.ok",
+      "observer.snapshot",
+      "observer.heartbeat",
+      "observer.error"
+    ],
+    "readOnly": true,
+    "viewMode": "SERVER_STATE_NOT_SCREEN_CAPTURE",
+    "tokenHandling": "Authorization header / first WS JSON only; key stays in browser memory, not URL/storage/logs",
+    "operatorSocketTtlMs": 3600000,
+    "hostExpiry": "original game session expiry",
+    "closeCodes": {
+      "4401": "authentication/expiry/access failure",
+      "4403": "wrong room/role or attempted game command"
+    },
+    "redaction": [
+      "session IDs",
+      "tokens",
+      "join codes",
+      "raw phone locations",
+      "individual claims",
+      "command receipts"
+    ],
+    "heartbeatMs": 15000,
+    "docs": "docs/observer.md"
+  },
+  "teamAccess": {
+    "enrollmentKeyConfig": "testAccessKey option / ZRIDE_TEST_ACCESS_KEY env; empty disables for local fixtures",
+    "keyUse": "Only POST /api/session body.accessKey. Subsequent APIs and /ws use issued opaque session Bearer token. Separate ZRIDE_OBSERVER_TOKEN remains read-only.",
+    "health": "Public health omits room count and identities",
+    "transport": "HTTP/WS prototype supports team test connectivity; HTTPS/WSS required for confidentiality and browser GPS secure context. Never place keys in URL.",
+    "gameBrowserOrigins": "Absent Origin for non-browser clients, same request Host with http/https, or programmatic allowedOrigins allow-list; unrelated browser origins denied"
+  },
+  "vehicleEffects": {
+    "status": "implemented semantic intent API; native HVAC/light executor not implemented",
+    "docs": "docs/vehicle-effects.md",
+    "revision": 6,
+    "channels": [
+      "AIRFLOW",
+      "AMBIENT",
+      "AUDIO"
+    ],
+    "sceneCues": [
+      "DANGER",
+      "HIT",
+      "ESCAPE"
+    ],
+    "reportStatuses": [
+      "RECEIVED",
+      "DISPATCHED",
+      "APPLIED_CONFIRMED",
+      "UNSUPPORTED",
+      "REJECTED_GATE",
+      "USER_OVERRIDDEN",
+      "FAILED",
+      "STOPPED"
+    ],
+    "executionReport": {
+      "type": "vehicle.effect.report",
+      "commandId": "new unique ID",
+      "effectSessionId": "current session UUID",
+      "effectId": "issued effect UUID",
+      "effectSeq": "issued effect sequence",
+      "status": "EffectReportStatus",
+      "observedValue": "optional finite number, boolean or null; APPLIED_CONFIRMED requires non-null"
+    },
+    "authorization": "HTTP mutations require host bearer AND the current authenticated host socket; enabled session, PLAYING and fresh P/UX/foreground gate required before emitting intents; only the current host socket reports physical execution",
+    "intensity": "virtualSpeedMps 0..100; DRIVE_WIND=min(speed/30,1)*maxIntensity01; other cues clamped to configured intensity cap",
+    "persistence": "No effect session, pending physical intent, report or replay receipt is checkpointed. Never replay on reconnect/restart.",
+    "ackMeaning": "RECEIVED/DISPATCHED are not actual actuator confirmation; APPLIED_CONFIRMED is client-reported get/callback state, not hardware attestation",
+    "defaultTtlMs": 3000,
+    "maxTtlMs": 5000,
+    "minCueDurationMs": 100,
+    "perRoomReceiptLimit": 10000,
+    "perRoomRetainedEffectRecords": 256,
+    "sceneId": "1..64 ASCII letters/digits/dot/colon/underscore/hyphen",
+    "observedValue": "finite number, boolean or null; APPLIED_CONFIRMED requires a non-null value",
+    "expiry": "Individual effect TTL expiration stops that channel; opt-in session remains enabled until invalidated or stopped",
+    "executionRule": "Only new current-host WS vehicle.effect.intent may execute. Never execute REST data.intents, GET effects.active, room/observer snapshots or retry responses.",
+    "sessionScope": {
+      "vehicleConnectionId": "required on enabled=true; use the current CAR_HOST auth.ok field, never a room/game snapshot",
+      "expectedControlVersion": "required on enabled=true; use latest GET effects.controlVersion; increments on enable/invalidation and each new explicit stop/disable, even already disabled",
+      "effectSessionId": "required in scene/cue; binds even a delayed first delivery to the exact enabled effect session",
+      "errors": [
+        "409 EFFECT_CONTROL_STALE",
+        "409 EFFECT_SESSION_STALE"
+      ]
+    },
+    "gameSceneAuthority": "When heist-demo-v1 has opted-in active effects, sceneId and virtual speed derive from server game state; manual /effects/scene returns GAME_SCENE_MANAGED. Generic COOP retains manual demo input."
+  },
+  "authOk": {
+    "CAR_HOST": {
+      "type": "auth.ok",
+      "sessionId": "own UUID",
+      "memberId": "own UUID",
+      "vehicleConnectionId": "fresh current socket UUID"
+    },
+    "PHONE": {
+      "type": "auth.ok",
+      "sessionId": "own UUID",
+      "memberId": "own UUID"
+    }
+  },
+  "serverState": {
+    "revision": 10,
+    "docs": "docs/server-state.md",
+    "scenarioIds": [
+      "generic-coop-v1",
+      "heist-demo-v1"
+    ],
+    "missionRoles": [
+      "DRIVER",
+      "SCOUT",
+      "TECH",
+      "COVER"
+    ],
+    "lifecycle": "room.state is authoritative: LOBBY/READY/PLAYING/PAUSED/CLEARED; game stage is a scenario substate, not a competing lifecycle",
+    "hostMutations": [
+      "game.configure",
+      "game.input",
+      "game.advance"
+    ],
+    "phoneMutations": [
+      "game.interact",
+      "existing fire/mobile.collect/world claim"
+    ],
+    "stateConcurrency": "configure/advance/interact bind roomEpoch and expectedGameRevision; driver input binds current driverSessionId and monotonic inputSeq, not per-tick revision",
+    "persistence": "Logical game/scenario/roles/objective progress and logical idempotency records persist; driver controls/speed/session/tick and cabin/effect authority reset on restart",
+    "clock": "No offline progress catch-up. Virtual movement only while current game, driver lease and vehicle gate allow it.",
+    "gameSnapshot": "RoomSnapshot.game for approved members; current driverSessionId only to host; no such state to pending phones",
+    "cabinSnapshot": "RoomSnapshot.cabin for approved members; claimed SDK/source/availability/freshness, not independent vehicle attestation",
+    "transport": "Game configure/input/advance/interact are REST POSTs; /ws broadcasts room snapshots. vehicle.cabin.report is a distinct current-car WS message.",
+    "logicalGameFields": [
+      "schemaVersion",
+      "missionRunId",
+      "scenarioId",
+      "revision",
+      "motionSeq",
+      "stageId",
+      "stageIndex",
+      "virtualSpeedMps",
+      "distanceM",
+      "stageElapsedMs",
+      "totalElapsedMs",
+      "completed",
+      "completedAt",
+      "roleAssignments",
+      "interactions",
+      "objectiveState",
+      "lastTransition",
+      "updatedAt"
+    ],
+    "missionPresets": {
+      "generic-coop-v1": [
+        "COOP"
+      ],
+      "heist-demo-v1": [
+        "PREPARE",
+        "INFILTRATE",
+        "DEFEND",
+        "EXTRACT",
+        "COMPLETE"
+      ],
+      "zombie-defense-v1": [
+        "DEFEND",
+        "COMPLETE"
+      ],
+      "supply-run-v1": [
+        "PREPARE",
+        "DELIVER",
+        "COMPLETE"
+      ],
+      "signal-puzzle-v1": [
+        "DECODE",
+        "SYNC",
+        "COMPLETE"
+      ]
+    },
+    "driverAuthority": "Current host snapshot only exposes a non-null driverSessionId. Fresh input uses roomEpoch+driverSessionId+monotonic inputSeq; held input expires after default 2000 ms. PHONE driverSessionId is null.",
+    "motion": "Server tick caps elapsed step at 250 ms by default; max virtual speed 30 m/s. Revision tracks logical mutations, motionSeq tracks motion snapshots. No wall-clock/offline catch-up.",
+    "missionRunId": "Persisted UUID changes on configure; sceneId is missionRunId:stageId. Configure keeps logical revision monotonic.",
+    "idempotency": "Logical configure/advance/interact receipts persist separately from physical effects and driver input. Receipt data must not contain driverSessionId or transient driver controls.",
+    "battleStageGuard": "heist fire/support.pulse are allowed only in DEFEND; otherwise GAME_ACTION_UNAVAILABLE. Killing the wave preserves PLAYING until mission COMPLETE; round.start after COMPLETE returns MISSION_COMPLETE until configure. Heist start/resume also requires approved connected non-EMPTY phone seats covering all remaining defense target angles; otherwise HEIST_CREW_REQUIRED (409). The initial preset needs REAR_LEFT and REAR_RIGHT; mission role names do not change seat firing sectors."
+  },
+  "cabin": {
+    "protocol": "zride-cabin-v1",
+    "reportType": "vehicle.cabin.report",
+    "currentConnectionBinding": "vehicleConnectionId from current CAR_HOST auth.ok; increasing reportSeq per connection",
+    "availability": [
+      "AVAILABLE",
+      "UNKNOWN",
+      "UNSUPPORTED",
+      "PERMISSION_DENIED",
+      "UNAVAILABLE"
+    ],
+    "sources": [
+      "PLEOS_READ",
+      "PLEOS_CALLBACK",
+      "SIMULATED",
+      "NONE"
+    ],
+    "freshnessMs": 6000,
+    "maxReportedAgeMs": 60000,
+    "signals": {
+      "hvac": [
+        "areaId",
+        "power",
+        "fanSpeed",
+        "fanMin",
+        "fanMax"
+      ],
+      "seatBelts": [
+        "seat",
+        "buckled"
+      ],
+      "energy": [
+        "socPercent"
+      ]
+    },
+    "observation": "Each observation has sampleSeq, availability, measuredAgeMs and source. AVAILABLE requires typed value/age/source; unavailable must not assert values.",
+    "freshness": "Same sampleSeq and same value is cached, not a fresh measurement. Older sequence and changed-value reuse are rejected. Ordinary vehicle heartbeat cannot revive stale observations.",
+    "derived": "Gate and freshness-qualified fanInput01, purificationInputEligible, approved-seat crew ready and beltProtection. AIRFLOW 4D output disables purification input eligibility. These derived fields do not grant inventory resources.",
+    "persistence": "No cabin observations or derived authority stored in SQLite; restart/reconnect clears to UNKNOWN",
+    "trust": "CLIENT_REPORTED_NOT_ATTESTED, hardwareAttested=false"
+  },
+  "placesParties": {
+    "revision": 7,
+    "catalog": "Git v3 manifest: 17923 OSM objects, hash-verified local shards; import-github-places.mjs; stable osm IDs; pending/disabled unless separate persisted review",
+    "route": "128 points,20km max segment,500km max length,30min TTL; route geometry is never persisted or public; successful updates broadcast a room snapshot with the new routeRevision/source/active metadata to approved party members; geometry stays private",
+    "invite": "HOST URL fragment capability,120s,3 uses,rotated/revoked on new invite/disband/restart; only pending PHONE sessions",
+    "lifecycle": "pending leave, approved leave, host remove, host disband; no automatic host migration; transient disconnect keeps party",
+    "shared": "world.subscribe / world.unsubscribe use commandId+spotId; world.snapshot is spot-scoped public summary, not room snapshot; no location proof or rewards",
+    "persistence": "reviews,party visibility,shared progress and contribution receipts saved; QR capabilities/routes/subscriptions reset",
+    "oauth": "Google phone accounts use nonce-bound ID token verification when HTTPS and GAME_GOOGLE_CLIENT_ID are configured; Pleos vehicle-owner OAuth stays disabled",
+    "navigationDestination": "Facility latitude/longitude retained; navigationDestination and drivingAssessment.arrival identify the mapped car-road node, not field-verified; never promotes game eligibility"
+  },
+  "deployment": {
+    "environment": [
+      "ZRIDE_ALLOWED_ORIGINS",
+      "ZRIDE_OBSERVER_ALLOWED_ORIGINS",
+      "ZRIDE_TRUSTED_PROXY_ADDRESSES",
+      "ZRIDE_BROWSER_API_ORIGIN",
+      "ZRIDE_PHONE_PUBLIC_URL"
+    ],
+    "contract": "docs/domain-handoff.md",
+    "configurationAsset": "/play/config.js",
+    "dnsOwnership": "Separate personal-project session; not modified automatically"
+  },
+  "collectionConsistency": {
+    "inventory": "Party-shared supplies. One acquisition per party+spawn+respawn cycle; separate parties are independent.",
+    "nearby": "Default omits party pickups during cooldown. includeClaimed=true includes claimed history and respawnAt. Other parties keep their own items.",
+    "invalidation": "snapshot.collection.revision and collection.changed refreshNearby=true; clients refresh nearby and discard stale responses. Raw GPS is not broadcast.",
+    "migration": "Legacy active/departed member claims union into the party ledger; existing inventory and successful receipts preserved.",
+    "replay": "Same successful command/body replays without another reward. Concurrent different members: exactly one succeeds, others ALREADY_CLAIMED.",
+    "respawn": {
+      "cooldownMs": 300000,
+      "environment": "ZRIDE_PICKUP_RESPAWN_MS (1000..3600000)",
+      "authority": "SERVER_CLOCK",
+      "persistence": "Stored respawnAt survives restart/reconnect. UTC schedule rollover does not shorten cooldown.",
+      "cycle": "nearby.spawnCycleId must be echoed on claim; stale cycle => SPAWN_CYCLE_CONFLICT. Replay of an old successful command returns its original receipt without a new reward.",
+      "notification": "collection.changed and snapshot.collection.revision invalidate all party caches once at expiry. Demo fixture IDs leave collectedPickupIds at expiry."
+    }
+  },
+  "missionEvents": {
+    "revision": 9,
+    "join": "Configure finite mission, publish/select eligible spot, join current instance before start. generic-coop-v1 is not an event mission.",
+    "instances": "ACTIVE until target distinct-party contributions or server expiry; then COOLDOWN and a new instanceId after respawn. Prior instances/results/awards remain archived. No catch-up minting of missed cycles during downtime.",
+    "policy": {
+      "durationMs": 1800000,
+      "respawnMs": 300000,
+      "target": 3,
+      "missionRewardSupplies": 1,
+      "sharedRewardSupplies": 2
+    },
+    "results": "Server observes finite mission actions, persists outcome and per-stage member interactions. Reconfigure/disband cancels active run. Legacy completed rooms are imported without retroactive rewards.",
+    "contribution": "Explicit HOST request requires instanceId, server result, pre-start binding, current event revision and parked gate. One party per event; old results cannot contribute to new cycles.",
+    "settlement": "PENDING award per mission/run/party and shared-instance/party. HOST claims into party supplies in the same DB commit as CLAIMED flag and receipt. No cash or real-world reward. Successful identical command replays; a different command for an already claimed award conflicts.",
+    "clock": "Global event expiry continues while a party is paused. Timer pauses bound active rooms when instance closes. Reconfigure and join a new cycle to play again.",
+    "notifications": "mission.changed and snapshot.missionLedger; REST paginated results/rewards are authoritative. Not a hardware effect replay.",
+    "limits": "Capacity 10000 runs, instances, command receipts. Fail closed on capacity; pages default50/max100. No automatic archive deletion or cross-party account balance."
+  },
+  "phoneAccounts": {
+    "revision": 10,
+    "scope": "Stable phone account ID; does not grant CAR_HOST or vehicle authority.",
+    "credentials": {
+      "accountToken": "PHONE_ACCOUNT, hashed server-side, 8-hour renewable session",
+      "gameToken": "PARTY_PLAY, approved room membership only; account resume rotates the old game token",
+      "googleCredential": "Google-signed ID token with one-use server nonce. Provider access/refresh tokens are not retained."
+    },
+    "joining": "QR URL fragment -> preview -> phone guest/Google login -> accept and claim an available seat -> room-scoped WS using the returned play ticket",
+    "switch": "expectedActivePartyId + confirmSwitch. The old membership is archived and the target membership activated in the same transaction. One active membership across account devices.",
+    "dataOwnership": {
+      "personal": "Profile, identity mapping, membership history and own mission participation summaries",
+      "party": "Supplies, reward awards, mission progress, vehicle state; never copied into a personal wallet or moved with a user",
+      "vehicle": "Existing native HOST token and fresh telemetry. Google phone login is not Pleos owner consent."
+    },
+    "guestRecovery": "Resume/refresh requires the account token. Lost guest token or private browser storage cannot recover identity across devices. Google LINK keeps the userId; an existing Google identity collision returns conflict without automatic merging.",
+    "transport": "Account APIs require trusted HTTPS whenever public origin is HTTPS. Google remains disabled without HTTPS + client ID. Current HTTP demo guest testing is not a production Google deployment.",
+    "configuration": "Generic GAME_* values; display name and URLs are not database identity keys. Protocol/service compatibility identifiers remain stable.",
+    "migration": "Account-aware checkpoint format2 accepts legacy1. Down-revision code must not rewrite format2; deliberate backup restoration is needed for downgrade."
+  },
+  "phoneWebClient": {
+    "entry": "https://hyundai.hjpark.net/play",
+    "accountController": "/play/account.js",
+    "authFlow": "GIS JavaScript popup callback, server challenge nonce and verified ID token exchange; no redirect URI or client secret",
+    "accountStorage": "API-origin-scoped tab sessionStorage; explicit guest creation; no automatic identity replacement on failure",
+    "playStorage": "memory only; PHONE_ACCOUNT is never game WS auth",
+    "resume": "explicit party-ticket for an existing membership; 4412 never auto-resumes",
+    "qr": "URL fragment removed before external SDK load; preview, explicit switch consent, immediate seat claim on successful acceptance",
+    "configuration": "GAME_GOOGLE_CLIENT_ID in private environment, exposed public ID through client-config/challenge; GAME_* URLs remain configurable"
+  },
+  "vehicleWebMock": {
+    "entry": "/play/demo",
+    "vehicle": "/play/vehicle",
+    "phone": "/play",
+    "transport": "Actual CAR_HOST REST+WS, QR120s and PHONE_ACCOUNT/approved PARTY_PLAY; no new REST endpoints",
+    "signals": "SIMULATED_API_CLIENTS, foreground/gear and 2s heartbeat, no SDK or actual actuation",
+    "qr": "Locally hosted MIT qrcode-generator 2.0.4; only invite fragment, never HOST/account/play token",
+    "iframe": "same-origin frame-ancestors only; parent message origin and exact child source verified; only invite URL and non-authoritative stage passed",
+    "secrets": "HOST access key cleared after enrollment; host credential memory only and never passed to parent/phone",
+    "google": "Actual configured GIS login in phone; account selection/consent by user; no new client or global branding change",
+    "enrollment": "Public demo GAME_TEST_ACCESS_KEY is empty; client-config.sessionAccessKeyRequired=false hides the key field. Existing role/party/session/observer authority is unchanged."
+  },
+  "pleosEmulatorViews": {
+    "catalog": "/vehicles/ redirects to the detail page when only one vehicle is configured",
+    "screens": [
+      "/vehicles/1",
+      "/vehicles/2",
+      "/vehicles/3"
+    ],
+    "status": "/vehicles/status.json on the separate CT317 viewer service",
+    "source": "ACTUAL_PLEOS_AVD, API34/Pleos2.1.0",
+    "publicVehicles": "CT317 uses PLEOS_VIEWER_VEHICLES=1. Screens, status entries and simulation/navigation endpoints are restricted to configured vehicles.",
+    "demoJourney": "Preview and shared links include start, end and an optional custom waypoint. Playback submits demo geometry. Actual navigation uses Pleos in the vehicle screen.",
+    "capacity": "Only 1 constrained 3GiB/1600x900 demo AVD validated; official guide is 4GiB and host cannot sustain 2-3 with current workloads",
+    "authority": "Interactive browser VNC with fixed demo and navigation commands. No public ADB, emulator start/stop or arbitrary-file endpoint.",
+    "freshness": "Current Android user (10), app-private snapshot under10s; only room ID/state, counts, gear and UX are public"
+  },
+  "navigationReportExample": {
+    "type": "navigation.report",
+    "commandId": "unique-id",
+    "reportSeq": 1,
+    "navigation": {
+      "source": "PLEOS_NAVI_HELPER",
+      "sdkConnected": true,
+      "owned": true,
+      "routeRevision": 1,
+      "event": "DESTINATION_INFO",
+      "status": "ROUTE_DRIVE",
+      "destination": "Sample destination",
+      "speedLimitKmh": 50,
+      "nextTurn": "right",
+      "nextTurnDistanceM": 150,
+      "remainingDistanceM": 1000,
+      "remainingTimeSec": 120,
+      "latitude": 37.5,
+      "longitude": 126.9,
+      "locationAgeMs": 100,
+      "geometryAvailable": false,
+      "destinationLatitude": 37.5547,
+      "destinationLongitude": 126.9707,
+      "waypoints": [{"latitude": 37.5663, "longitude": 126.9779}],
+      "heading": 180
+    }
+  },
+  "nativeNavigation": {
+    "sdk": "NaviHelper 3.0.5/navi-data 3.0.4",
+    "auth": "Current CAR_HOST socket; increasing reportSeq; approved party snapshots only",
+    "geometry": "TripSummary routePoints are POI summaries, not road polylines. SDK ownership clears previous demo geometry.",
+    "freshness": "Report expires after10s; position sample and age must remain within10s; reconnect/restart resets state",
+    "persistence": "SDK coordinates and navigation state excluded from SQLite checkpoints",
+    "callbacks": "Request success alone is not route readiness; callback delivery depends on the navigation app. Destination changes can be detected from SDK destination responses.",
+    "screen": "Existing game UX gates preserved; no APP_MAPS or driving exemption",
+    "routeSigns": "Optional destinationLatitude/destinationLongitude (0,0 ignored), heading 0..360, waypoints (ordered array of up to 16 latitude/longitude objects, excluding 0,0), and missingWaypointCount (1..16 when the SDK reports waypoints with no usable coordinates) are accepted. With a destination and position the server fetches an OSRM route from the position through those waypoints in order to the destination whenever the native revision, waypoint sequence, destination, or off-route counter changes. Omitted or empty waypoints use direct routing. The fallback connects these points with straight segments. ZRIDE_ROUTING_URL defaults to the public OSRM demo and accepts \"off\". The route serves the passenger map and signs; its geometry is calculated separately from Pleos. positionSource SIMULATED is accepted for clearly labelled test reports."
+  }
+}

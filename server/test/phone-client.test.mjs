@@ -1,0 +1,88 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import { once } from 'node:events';
+import { createPhoneClientService } from '../phone-client.mjs';
+import { createDemoServer } from '../server.mjs';
+
+test('loading phone game assets keeps the journey API available', async () => {
+  const app = createDemoServer();
+  const address = await app.listen(0);
+  const origin = 'http://127.0.0.1:' + address.port;
+  const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+  const status = (path, method) => new Promise((resolve, reject) => {
+    const request = http.request(origin + path, { method, agent }, response => {
+      response.once('end', () => resolve(response.statusCode));
+      response.resume();
+    });
+    request.once('error', reject);
+    request.end();
+  });
+  try {
+    for (let i = 0; i < 121; i++) {
+      assert.equal(await status('/play/drive/games/license-quiz/questions.json', 'HEAD'), 200);
+    }
+    assert.equal(await status('/api/client-config', 'GET'), 200);
+  } finally {
+    agent.destroy();
+    await app.close();
+  }
+});
+
+test('phone reference client serves only allow-listed static assets with same-origin CSP', async () => {
+  const client = createPhoneClientService();
+  const server = http.createServer((req, res) => {
+    if (!client.handleHttp(req, res, new URL(req.url, 'http://localhost').pathname)) { res.writeHead(404); res.end(); }
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const base = 'http://127.0.0.1:' + server.address().port;
+  // Ephemeral loopback ports can be reused by parallel tests while fetch keeps
+  // old idle connections. These static-asset checks do not test keep-alive.
+  const request = (path, options = {}) => fetch(base + path, { ...options, headers: { connection: 'close', ...options.headers } });
+  try {
+    for (const path of ['/play', '/play/', '/play/app.js', '/play/account.js', '/play/style.css', '/play/journey-map.js', '/play/leaflet.js', '/play/leaflet.css', '/play/leaflet-license', '/play/demo', '/play/demo.js', '/play/vehicle', '/play/vehicle.js', '/play/qrcode.js', '/play/arena.js', '/play/arena.css', '/play/car', '/play/car.js', '/play/car.css', '/play/qr.js', '/play/thief.webp', '/play/relay.webp', '/play/deadzone.webp',
+      '/play/ply-lockup.jpg', '/play/ply-symbol.jpg', '/play/ply-road-portrait.jpg',
+      '/play/route-sign/config.js', '/play/route-sign/sign-license-quiz.png', '/play/route-sign/sign-pole-jump.png',
+      '/play/route-sign/sign-raindrop.png',
+      '/play/drive/style.css', '/play/drive/bag.html', '/play/drive/shared/bag.js',
+      '/play/drive/shared/item-icons.js', '/play/drive/shared/ply.css', '/play/drive/shared/journey.js', '/play/drive/games/license-quiz/index.html',
+      '/play/drive/games/license-quiz/questions.json', '/play/drive/games/pole-jump/index.html',
+      '/play/drive/games/raindrop/index.html']) {
+      const response = await request(path);
+      assert.equal(response.status, 200);
+      assert.ok(response.headers.get('content-security-policy').includes("connect-src 'self'"));
+      assert.ok(response.headers.get('content-security-policy').includes('ws://127.0.0.1:' + server.address().port));
+      assert.ok(response.headers.get('content-security-policy').includes('wss://127.0.0.1:' + server.address().port));
+      assert.equal(response.headers.get('cache-control'), 'no-store');
+      assert.ok(response.headers.get('content-security-policy').includes('https://accounts.google.com/gsi/client'));
+      const mapOrigin = ['/play', '/play/'].includes(path) ? ' https://tile.openstreetmap.org' : '';
+      assert.ok(response.headers.get('content-security-policy').includes("img-src 'self' data:" + mapOrigin + ';'), path);
+      assert.ok(response.headers.get('content-security-policy').includes("frame-ancestors 'self'"));
+      assert.equal(response.headers.get('cross-origin-opener-policy'),'same-origin-allow-popups');
+      for (const restriction of ['camera=()', 'microphone=()', 'geolocation=()']) assert.ok(response.headers.get('permissions-policy').includes(restriction));
+      if (path.endsWith('.jpg')) assert.equal(response.headers.get('content-type'), 'image/jpeg');
+      assert.ok((await response.arrayBuffer()).byteLength > 50);
+    }
+    assert.equal((await request('/play/private.env')).status, 404);
+    assert.equal((await request('/play/drive/server/index.mjs')).status, 404);
+    assert.equal((await request('/play', { method: 'POST' })).status, 405);
+    const head = await request('/play', { method: 'HEAD' });
+    assert.equal(head.status, 200); assert.equal(await head.text(), '');
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('phone CSP socket sources preserve one validated host and never interpolate unsafe Host syntax', () => {
+  const client = createPhoneClientService();
+  const policy = host => {
+    let headers;
+    client.handleHttp({ method: 'HEAD', headers: { host } }, { writeHead(_status, value) { headers = value; }, end() {} }, '/play');
+    return headers['content-security-policy'];
+  };
+  for (const host of ['afsd.iptime.org:8000', '192.168.0.219:8000', '[::1]:8000']) {
+    assert.ok(policy(host).includes(' ws://' + host + ' wss://' + host + ';'));
+  }
+  for (const host of ["afsd.iptime.org'; script-src *", 'host/path', 'host@evil.invalid', 'host:99999', 'host *']) {
+    assert.ok(!policy(host).includes(' ws://'));
+    assert.ok(!policy(host).includes('script-src *'));
+  }
+});
